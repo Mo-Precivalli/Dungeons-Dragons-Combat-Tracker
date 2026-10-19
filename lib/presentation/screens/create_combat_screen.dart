@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:dnd_combat_tracker/l10n/app_localizations.dart';
-import '../providers/combat_controller.dart';
+import '../../data/models/combat.dart';
 
 class CreateCombatScreen extends ConsumerStatefulWidget {
   const CreateCombatScreen({super.key});
@@ -29,11 +30,14 @@ class _CreateCombatScreenState extends ConsumerState<CreateCombatScreen> {
   }
 
   Future<void> _createCombat() async {
-    if (_controller.text.isNotEmpty) {
+    final name = _controller.text.trim();
+    if (name.isNotEmpty) {
       try {
-        await ref
-            .read(combatControllerProvider.notifier)
-            .addCombat(_controller.text);
+        final combat = Combat()
+          ..name = name
+          ..createdAt = DateTime.now()
+          ..status = CombatStatus.active;
+        await Hive.box<Combat>('combats').add(combat);
         if (mounted) Navigator.pop(context);
       } catch (e) {
         if (mounted) {

@@ -1,19 +1,47 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
-import '../providers/combat_controller.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import '../../data/models/combat.dart';
+import '../../data/models/combatant.dart';
 import 'combat_detail_screen.dart';
 import 'create_combat_screen.dart';
 
 import 'package:dnd_combat_tracker/l10n/app_localizations.dart';
 import '../providers/theme_provider.dart';
 
-class DashboardScreen extends ConsumerWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final combatsAsync = ref.watch(combatControllerProvider);
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<DashboardScreen> {
+  late final Box<Combat> _combatBox;
+  late final Box<Combatant> _combatantBox;
+  late final ValueListenable<Box<Combat>> _combatListenable;
+
+  @override
+  void initState() {
+    super.initState();
+    _combatBox = Hive.box<Combat>('combats');
+    _combatantBox = Hive.box<Combatant>('combatants');
+    _combatListenable = _combatBox.listenable();
+  }
+
+  void _deleteCombat(int id) {
+    _combatBox.delete(id);
+    final combatantsToDelete = _combatantBox.values
+        .where((c) => c.combatId == id)
+        .map((c) => c.key)
+        .toList();
+    _combatantBox.deleteAll(combatantsToDelete);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final themeMode = ref.watch(themeProvider);
 
@@ -52,8 +80,10 @@ class DashboardScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: combatsAsync.when(
-        data: (combats) {
+      body: ValueListenableBuilder<Box<Combat>>(
+        valueListenable: _combatListenable,
+        builder: (context, box, _) {
+          final combats = box.values.toList();
           if (combats.isEmpty) {
             return Center(
               child: Text(
@@ -63,60 +93,44 @@ class DashboardScreen extends ConsumerWidget {
               ),
             );
           }
-          return CustomScrollView(
-            slivers: [
-              SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final combat = combats[index];
-                    return Dismissible(
-                      key: Key(combat.id.toString()),
-                      background: Container(color: Colors.red),
-                      onDismissed: (_) {
-                        ref
-                            .read(combatControllerProvider.notifier)
-                            .deleteCombat(combat.id);
-                      },
-                      child: ListTile(
-                        title: Text(combat.name,
-                            style: GoogleFonts.inter(fontSize: 18)),
-                        subtitle: Text('${l10n.round}: ${combat.roundCount}'),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () {
-                            ref
-                                .read(combatControllerProvider.notifier)
-                                .deleteCombat(combat.id);
-                          },
-                        ),
-                        onTap: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (context) => CombatDetailScreen(
-                                  combatId: combat.id, combatName: combat.name),
-                            ),
-                          );
-                        },
+          return ListView.builder(
+            itemCount: combats.length,
+            itemBuilder: (context, index) {
+              final combat = combats[index];
+              return Dismissible(
+                key: ValueKey(combat.id),
+                background: Container(color: Colors.red),
+                onDismissed: (_) => _deleteCombat(combat.id),
+                child: ListTile(
+                  title: Text(combat.name,
+                      style: GoogleFonts.inter(fontSize: 18)),
+                  subtitle: Text('${l10n.round}: ${combat.roundCount}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    onPressed: () => _deleteCombat(combat.id),
+                  ),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (context) => CombatDetailScreen(
+                            combatId: combat.id, combatName: combat.name),
                       ),
                     );
                   },
-                  childCount: combats.length,
                 ),
-              ),
-            ],
+              );
+            },
           );
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (err, stack) => Center(child: Text('${l10n.error}: $err')),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => _showAddCombatDialog(context, ref),
+        onPressed: () => _showAddCombatDialog(context),
         child: const Icon(Icons.add),
       ),
     );
   }
 
-  void _showAddCombatDialog(BuildContext context, WidgetRef ref) {
+  void _showAddCombatDialog(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => const CreateCombatScreen(),

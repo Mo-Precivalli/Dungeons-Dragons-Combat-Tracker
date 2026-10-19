@@ -4,8 +4,11 @@ part 'combatant.g.dart';
 
 @HiveType(typeId: 1)
 class Combatant extends HiveObject {
+  int? _id;
+
   // Hive auto-generates keys
-  int get id => key as int;
+  int get id => _id ?? (key as int);
+  set id(int value) => _id = value;
 
   @HiveField(0)
   late int combatId; // We'll store the combat key here for manual relational mapping
@@ -33,4 +36,16 @@ class Combatant extends HiveObject {
 
   @HiveField(8)
   List<String> conditions = [];
+
+  @HiveField(9)
+  String? characterClass;
+
+  @HiveField(10)
+  String combatantType = 'monster'; // 'player', 'monster', 'npc'
+
+  @HiveField(11)
+  int deathSaveSuccesses = 0;
+
+  @HiveField(12)
+  int deathSaveFailures = 0;
 }

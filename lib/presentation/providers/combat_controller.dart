@@ -1,5 +1,6 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../data/models/combat.dart';
+import '../../data/models/combatant.dart';
 import 'repository_providers.dart';
 
 part 'combat_controller.g.dart';
@@ -26,8 +27,19 @@ class CombatController extends _$CombatController {
     await repository.deleteCombat(id);
   }
 
+  bool _canTakeTurn(Combatant c) {
+    if (c.hpCurrent > 0) return true;
+    final hasDeathSaves =
+        c.isPlayer || c.combatantType == 'player' || c.combatantType == 'npc';
+    if (hasDeathSaves && c.deathSaveFailures < 3 && c.deathSaveSuccesses < 3) {
+      return true;
+    }
+    return false;
+  }
+
   Future<void> nextTurn(int combatId) async {
     final repository = await ref.read(combatRepositoryProvider.future);
+
     final combat = await repository.getCombat(combatId);
     if (combat == null) return;
 
@@ -40,9 +52,9 @@ class CombatController extends _$CombatController {
     int nextIndex = combat.currentTurnIndex + 1;
     bool foundNext = false;
 
-    // Search for next alive combatant in current round
+    // Search for next active combatant in current round
     for (int i = nextIndex; i < combatants.length; i++) {
-      if (combatants[i].hpCurrent > 0) {
+      if (_canTakeTurn(combatants[i])) {
         combat.currentTurnIndex = i;
         foundNext = true;
         break;
@@ -54,7 +66,7 @@ class CombatController extends _$CombatController {
       combat.roundCount++;
       combat.currentTurnIndex = 0; // Default to 0 if all dead
       for (int i = 0; i < combatants.length; i++) {
-        if (combatants[i].hpCurrent > 0) {
+        if (_canTakeTurn(combatants[i])) {
           combat.currentTurnIndex = i;
           break;
         }

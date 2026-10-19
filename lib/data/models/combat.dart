@@ -4,9 +4,12 @@ part 'combat.g.dart';
 
 @HiveType(typeId: 0)
 class Combat extends HiveObject {
+  int? _id;
+
   // Hive auto-generates keys, so we don't need an explicit Id field for storage,
-  // but we can use the key as the ID.
-  int get id => key as int;
+  // but we can use the key as the ID (or _id in unit tests).
+  int get id => _id ?? (key as int);
+  set id(int value) => _id = value;
 
   @HiveField(0)
   late String name;
