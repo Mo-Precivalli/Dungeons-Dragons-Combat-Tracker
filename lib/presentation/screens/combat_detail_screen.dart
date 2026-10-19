@@ -1,24 +1,26 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import '../../data/models/combat.dart';
+import 'package:dnd_combat_tracker/l10n/app_localizations.dart';
+
 import '../../data/models/combatant.dart';
+import '../providers/combat_tracker_provider.dart';
 import '../widgets/add_combatant_dialog.dart';
+import '../widgets/combat_initiative_dialog.dart';
 import '../widgets/combatant_card.dart';
 import '../widgets/condition_selector_dialog.dart';
 import '../widgets/theme_toggle.dart';
-import 'package:dnd_combat_tracker/l10n/app_localizations.dart';
 
 class CombatDetailScreen extends ConsumerStatefulWidget {
   final int combatId;
   final String combatName;
+  final bool promptInitiativeOnStart;
 
   const CombatDetailScreen({
     super.key,
     required this.combatId,
     required this.combatName,
+    this.promptInitiativeOnStart = true,
   });
 
   @override
@@ -29,29 +31,51 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
   final ScrollController _scrollController = ScrollController();
   final Map<int, GlobalKey> _itemKeys = {};
 
-  late final Box<Combat> _combatBox;
-  late final Box<Combatant> _combatantBox;
-  late final ValueListenable<Box<Combatant>> _combatantListenable;
   late final ValueNotifier<int> _activeTurnNotifier;
   late final ValueNotifier<int> _roundNotifier;
 
   @override
   void initState() {
     super.initState();
-    _combatBox = Hive.box<Combat>('combats');
-    _combatantBox = Hive.box<Combatant>('combatants');
-    _combatantListenable = _combatantBox.listenable();
-
-    final combat = _combatBox.get(widget.combatId);
+    final service = ref.read(combatTrackerServiceProvider);
+    final combat = service.getCombat(widget.combatId);
     _activeTurnNotifier = ValueNotifier<int>(combat?.currentTurnIndex ?? 0);
     _roundNotifier = ValueNotifier<int>(combat?.roundCount ?? 1);
+
+    if (widget.promptInitiativeOnStart) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _showInitiativePrompt();
+      });
+    }
+  }
+
+  Future<void> _showInitiativePrompt() async {
+    final service = ref.read(combatTrackerServiceProvider);
+    final combat = service.getCombat(widget.combatId);
+    final campaign = combat?.campaignId != null
+        ? service.getCampaign(combat!.campaignId!)
+        : null;
+
+    final confirmed = await CombatInitiativeDialog.show(
+      context,
+      combatId: widget.combatId,
+      combatName: widget.combatName,
+      service: service,
+      campaign: campaign,
+    );
+
+    if (confirmed == true && mounted) {
+      _activeTurnNotifier.value = 0;
+      _scrollToActiveIfNeeded(0);
+    }
   }
 
   @override
   void dispose() {
-    _scrollController.dispose();
     _activeTurnNotifier.dispose();
     _roundNotifier.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -59,96 +83,63 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
     return _itemKeys.putIfAbsent(index, () => GlobalKey());
   }
 
-  bool _canTakeTurn(Combatant c) {
-    if (c.hpCurrent > 0) return true;
-    final hasDeathSaves =
-        c.isPlayer || c.combatantType == 'player' || c.combatantType == 'npc';
-    if (hasDeathSaves && c.deathSaveFailures < 3 && c.deathSaveSuccesses < 3) {
-      return true;
-    }
-    return false;
-  }
-
   void _handleNextTurn() {
-    final combat = _combatBox.get(widget.combatId);
-    if (combat == null) return;
+    final service = ref.read(combatTrackerServiceProvider);
+    final result = service.advanceTurn(widget.combatId);
 
-    final combatants = _combatantBox.values
-        .where((c) => c.combatId == widget.combatId)
-        .toList()
-      ..sort((a, b) => b.initiative.compareTo(a.initiative));
-    if (combatants.isEmpty) return;
+    _activeTurnNotifier.value = result.turnIndex;
+    _roundNotifier.value = result.roundCount;
 
-    int nextIndex = combat.currentTurnIndex + 1;
-    bool foundNext = false;
-
-    for (int i = nextIndex; i < combatants.length; i++) {
-      if (_canTakeTurn(combatants[i])) {
-        combat.currentTurnIndex = i;
-        foundNext = true;
-        break;
-      }
-    }
-
-    if (!foundNext) {
-      combat.roundCount++;
-      combat.currentTurnIndex = 0;
-      for (int i = 0; i < combatants.length; i++) {
-        if (_canTakeTurn(combatants[i])) {
-          combat.currentTurnIndex = i;
-          break;
-        }
-      }
-    }
-
-    _roundNotifier.value = combat.roundCount;
-    _activeTurnNotifier.value = combat.currentTurnIndex;
-    _scrollToActiveCombatant(combat.currentTurnIndex);
-    combat.save();
+    _scrollToActiveIfNeeded(result.turnIndex);
   }
 
-  void _scrollToActiveCombatant(int activeIndex) {
+  Future<void> _handleUndo() async {
+    final service = ref.read(combatTrackerServiceProvider);
+    final snapshot = await service.undoLastAction(widget.combatId);
+    if (snapshot != null) {
+      _activeTurnNotifier.value = snapshot.currentTurnIndex;
+      _roundNotifier.value = snapshot.roundCount;
+      _scrollToActiveIfNeeded(snapshot.currentTurnIndex);
+    }
+  }
+
+  void _scrollToActiveIfNeeded(int targetIndex) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scrollController.hasClients) return;
 
-      // Quando voltar para o primeiro da lista (início da rodada), volta ao topo
-      if (activeIndex == 0) {
-        if (_scrollController.offset > 0) {
+      final position = _scrollController.position;
+
+      if (targetIndex == 0) {
+        if (position.pixels > 0) {
           _scrollController.animateTo(
-            0.0,
-            duration: const Duration(milliseconds: 280),
+            0,
+            duration: const Duration(milliseconds: 260),
             curve: Curves.easeOutCubic,
           );
         }
         return;
       }
 
-      final key = _itemKeys[activeIndex];
-      final cardContext = key?.currentContext;
-      if (cardContext == null) return;
+      final key = _itemKeys[targetIndex];
+      final ctx = key?.currentContext;
+      if (ctx == null) return;
 
-      final renderObject = cardContext.findRenderObject();
+      final renderObject = ctx.findRenderObject();
       if (renderObject == null) return;
 
       final viewport = RenderAbstractViewport.maybeOf(renderObject);
       if (viewport == null) return;
 
-      final position = _scrollController.position;
       final currentOffset = position.pixels;
-
-      // Offset onde o topo do card fica visível no topo da tela (com pequena margem)
       final offsetToRevealTop =
           viewport.getOffsetToReveal(renderObject, 0.0).offset - 8.0;
-      // Offset onde a base inteira do card fica visível na parte de baixo da tela
       final offsetToRevealBottom =
           viewport.getOffsetToReveal(renderObject, 1.0).offset + 12.0;
 
       double? targetOffset;
       if (currentOffset < offsetToRevealBottom) {
-        // Card está cortado na parte de baixo ou abaixo do limite da tela -> desce apenas o necessário
         targetOffset = offsetToRevealBottom;
       } else if (currentOffset > offsetToRevealTop) {
-        // Card está acima do limite superior da tela -> sobe apenas o necessário
         targetOffset = offsetToRevealTop;
       }
 
@@ -171,17 +162,26 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final service = ref.watch(combatTrackerServiceProvider);
+    final combat = service.getCombat(widget.combatId);
+    final campaign = combat?.campaignId != null
+        ? service.getCampaign(combat!.campaignId!)
+        : null;
 
     return Scaffold(
       appBar: AppBar(
         title: ValueListenableBuilder<int>(
           valueListenable: _roundNotifier,
           builder: (context, roundCount, _) {
+            final subtitleText = (combat?.campaignName != null &&
+                    combat!.campaignName!.isNotEmpty)
+                ? '${l10n.round} $roundCount • ${combat.campaignName}'
+                : '${l10n.round} $roundCount';
             return Column(
               children: [
                 Text(widget.combatName),
                 Text(
-                  '${l10n.round} $roundCount',
+                  subtitleText,
                   style: const TextStyle(
                       fontSize: 12, fontWeight: FontWeight.normal),
                 ),
@@ -190,6 +190,11 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
           },
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.casino_outlined),
+            tooltip: 'Definir Iniciativas do Combate',
+            onPressed: _showInitiativePrompt,
+          ),
           const Padding(
             padding: EdgeInsets.only(right: 8.0),
             child: ThemeToggle(),
@@ -199,13 +204,10 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
       body: Column(
         children: [
           Expanded(
-            child: ValueListenableBuilder<Box<Combatant>>(
-              valueListenable: _combatantListenable,
-              builder: (context, cbBox, _) {
-                final combatants = cbBox.values
-                    .where((c) => c.combatId == widget.combatId)
-                    .toList()
-                  ..sort((a, b) => b.initiative.compareTo(a.initiative));
+            child: ValueListenableBuilder<Object?>(
+              valueListenable: service.combatantsListenable,
+              builder: (context, _, __) {
+                final combatants = service.getCombatants(widget.combatId);
 
                 if (combatants.isEmpty) {
                   return Center(child: Text(l10n.addCombatantsToStart));
@@ -229,26 +231,46 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
                             child: ValueListenableBuilder<int>(
                               valueListenable: _activeTurnNotifier,
                               builder: (context, activeTurnIndex, _) {
+                                final item = combatants[index];
                                 return CombatantCard(
-                                  key: ValueKey(combatants[index].id),
-                                  combatant: combatants[index],
+                                  key: ValueKey(item.id),
+                                  combatant: item,
                                   isActive: index == activeTurnIndex,
-                                  onMinus: (amount) => _updateHp(
-                                      ref, combatants[index], -amount),
+                                  onMinus: (amount) =>
+                                      service.updateHp(item, -amount),
                                   onPlus: (amount) =>
-                                      _updateHp(ref, combatants[index], amount),
+                                      service.updateHp(item, amount),
                                   onDeathSaveChanged: (successes, failures) =>
-                                      _updateDeathSaves(ref, combatants[index],
-                                          successes, failures),
+                                      service.updateDeathSaves(
+                                          item, successes, failures),
+                                  onConcentrationResolved: (keeps) =>
+                                      service.resolveConcentration(
+                                    item,
+                                    keepsConcentration: keeps,
+                                  ),
                                   onEdit: () => _showCombatantDialog(
-                                      context, ref,
-                                      combatant: combatants[index]),
-                                  onDelete: () => _deleteCombatant(
-                                      ref, combatants[index].id),
+                                    context,
+                                    service,
+                                    combatant: item,
+                                  ),
+                                  onDelete: () {
+                                    final nextIdx = service.deleteCombatant(
+                                      widget.combatId,
+                                      item.id,
+                                      _activeTurnNotifier.value,
+                                    );
+                                    _activeTurnNotifier.value = nextIdx;
+                                  },
                                   onConditionTap: () => _showConditionDialog(
-                                      context, ref, combatants[index]),
+                                    context,
+                                    service,
+                                    item,
+                                  ),
                                   onTempHpTap: () => _showTempHpDialog(
-                                      context, ref, combatants[index]),
+                                    context,
+                                    service,
+                                    item,
+                                  ),
                                 );
                               },
                             ),
@@ -261,7 +283,7 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
             ),
           ),
 
-          // Buttons
+          // Bottom Action Bar: Adicionar + Botão Simples de Retornar (Undo) + Próximo
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(8.0),
@@ -271,11 +293,11 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
-                        backgroundColor:
-                            Theme.of(context).colorScheme.primary,
+                        backgroundColor: Theme.of(context).colorScheme.primary,
                         foregroundColor: Colors.white,
                       ),
-                      onPressed: () => _showAddCombatantFlow(context, ref),
+                      onPressed: () =>
+                          _showAddCombatantFlow(context, service, campaign),
                       child: const Text(
                         'Adicionar',
                         textAlign: TextAlign.center,
@@ -284,7 +306,32 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 10),
+                  ValueListenableBuilder<bool>(
+                    valueListenable:
+                        service.canUndoListenable(widget.combatId),
+                    builder: (context, canUndo, _) {
+                      return SizedBox(
+                        height: 52,
+                        width: 54,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            padding: EdgeInsets.zero,
+                            backgroundColor: canUndo
+                                ? Colors.blueGrey[700]
+                                : Colors.grey.withValues(alpha: 0.25),
+                            foregroundColor: Colors.white,
+                          ),
+                          onPressed: canUndo ? _handleUndo : null,
+                          child: const Tooltip(
+                            message: 'Voltar última movimentação',
+                            child: Icon(Icons.undo, size: 24),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
@@ -310,82 +357,11 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
     );
   }
 
-  void _updateHp(WidgetRef ref, Combatant combatant, int amount) {
-    int newHpCurrent = combatant.hpCurrent;
-    int newHpTemp = combatant.hpTemp;
-
-    if (amount < 0) {
-      // Damage: Absorb with Temp HP first
-      int damage = -amount;
-      if (newHpTemp > 0) {
-        if (newHpTemp >= damage) {
-          newHpTemp -= damage;
-          damage = 0;
-        } else {
-          damage -= newHpTemp;
-          newHpTemp = 0;
-        }
-      }
-      newHpCurrent = (newHpCurrent - damage).clamp(0, combatant.hpMax);
-    } else {
-      // Healing: Apply to HP Current
-      newHpCurrent = (newHpCurrent + amount).clamp(0, combatant.hpMax);
-    }
-
-    combatant
-      ..hpCurrent = newHpCurrent
-      ..hpTemp = newHpTemp;
-
-    if (newHpCurrent > 0) {
-      combatant.deathSaveSuccesses = 0;
-      combatant.deathSaveFailures = 0;
-    }
-
-    combatant.save();
-  }
-
-  void _updateDeathSaves(
-      WidgetRef ref, Combatant combatant, int successes, int failures) {
-    combatant
-      ..deathSaveSuccesses = successes.clamp(0, 3)
-      ..deathSaveFailures = failures.clamp(0, 3);
-    combatant.save();
-  }
-
-  void _deleteCombatant(WidgetRef ref, int id) {
-    final combatantsBefore = _combatantBox.values
-        .where((c) => c.combatId == widget.combatId)
-        .toList()
-      ..sort((a, b) => b.initiative.compareTo(a.initiative));
-    final deletedIndex = combatantsBefore.indexWhere((c) => c.id == id);
-
-    _combatantBox.delete(id);
-
-    final remainingLength =
-        combatantsBefore.length - (deletedIndex != -1 ? 1 : 0);
-    final combat = _combatBox.get(widget.combatId);
-    int currentIndex = combat?.currentTurnIndex ?? _activeTurnNotifier.value;
-
-    if (remainingLength <= 0) {
-      currentIndex = 0;
-    } else {
-      if (deletedIndex != -1 && deletedIndex < currentIndex) {
-        currentIndex -= 1;
-      }
-      if (currentIndex >= remainingLength) {
-        currentIndex = 0;
-      }
-    }
-
-    _activeTurnNotifier.value = currentIndex;
-    if (combat != null) {
-      combat.currentTurnIndex = currentIndex;
-      combat.save();
-    }
-  }
-
   Future<void> _showTempHpDialog(
-      BuildContext context, WidgetRef ref, Combatant combatant) async {
+    BuildContext context,
+    CombatTrackerService service,
+    Combatant combatant,
+  ) async {
     final hpTempController =
         TextEditingController(text: combatant.hpTemp.toString());
     final l10n = AppLocalizations.of(context)!;
@@ -408,8 +384,7 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
           TextButton(
             onPressed: () {
               final hpTemp = int.tryParse(hpTempController.text) ?? 0;
-              combatant.hpTemp = hpTemp;
-              combatant.save();
+              service.updateTempHp(combatant, hpTemp);
               Navigator.pop(context);
             },
             child: Text(l10n.save),
@@ -420,7 +395,10 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
   }
 
   Future<void> _showConditionDialog(
-      BuildContext context, WidgetRef ref, Combatant combatant) async {
+    BuildContext context,
+    CombatTrackerService service,
+    Combatant combatant,
+  ) async {
     final result = await ConditionSelectorDialog.show(
       context,
       title: 'Condições: ${combatant.name}',
@@ -429,28 +407,32 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
     );
 
     if (result != null) {
-      combatant.conditions = result;
-      combatant.save();
+      service.updateConditions(combatant, result);
     }
   }
 
   Future<void> _showAddCombatantFlow(
-      BuildContext context, WidgetRef ref) async {
+    BuildContext context,
+    CombatTrackerService service,
+    dynamic campaign,
+  ) async {
     await showDialog(
       context: context,
       builder: (context) => AddCombatantDialog(
         combatId: widget.combatId,
+        campaign: campaign,
         onAddCombatants: (combatants) async {
-          for (final c in combatants) {
-            await _combatantBox.add(c);
-          }
+          await service.addCombatants(widget.combatId, combatants);
         },
       ),
     );
   }
 
-  Future<void> _showCombatantDialog(BuildContext context, WidgetRef ref,
-      {Combatant? combatant}) async {
+  Future<void> _showCombatantDialog(
+    BuildContext context,
+    CombatTrackerService service, {
+    Combatant? combatant,
+  }) async {
     final isEditing = combatant != null;
     final nameController = TextEditingController(text: combatant?.name ?? '');
     final initController =
@@ -591,6 +573,7 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
                 if (name.isEmpty) return;
 
                 if (isEditing) {
+                  service.recordSnapshot(widget.combatId);
                   final parsedCurrentHp =
                       int.tryParse(hpCurrentController.text) ??
                           combatant.hpCurrent;
@@ -617,7 +600,7 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
                     combatant.deathSaveFailures = 0;
                   }
 
-                  await combatant.save();
+                  await service.saveCombatantEdit(combatant);
                 } else {
                   final newCombatant = Combatant()
                     ..combatId = widget.combatId
@@ -631,7 +614,7 @@ class _CombatDetailScreenState extends ConsumerState<CombatDetailScreen> {
                     ..isPlayer = isPlayer
                     ..combatantType = isPlayer ? 'player' : 'monster';
 
-                  await _combatantBox.add(newCombatant);
+                  await service.addCombatants(widget.combatId, [newCombatant]);
                 }
 
                 if (context.mounted) Navigator.pop(context);

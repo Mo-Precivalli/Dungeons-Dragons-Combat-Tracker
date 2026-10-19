@@ -31,13 +31,14 @@ class CombatantAdapter extends TypeAdapter<Combatant> {
       ..combatantType =
           (fields[10] as String?) ?? (isPlayer ? 'player' : 'monster')
       ..deathSaveSuccesses = (fields[11] as int?) ?? 0
-      ..deathSaveFailures = (fields[12] as int?) ?? 0;
+      ..deathSaveFailures = (fields[12] as int?) ?? 0
+      ..pendingConcentrationDc = fields[13] as int?;
   }
 
   @override
   void write(BinaryWriter writer, Combatant obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.combatId)
       ..writeByte(1)
@@ -63,7 +64,9 @@ class CombatantAdapter extends TypeAdapter<Combatant> {
       ..writeByte(11)
       ..write(obj.deathSaveSuccesses)
       ..writeByte(12)
-      ..write(obj.deathSaveFailures);
+      ..write(obj.deathSaveFailures)
+      ..writeByte(13)
+      ..write(obj.pendingConcentrationDc);
   }
 
   @override

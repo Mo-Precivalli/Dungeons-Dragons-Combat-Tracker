@@ -25,6 +25,12 @@ class Combat extends HiveObject {
 
   @HiveField(4)
   int currentTurnIndex = 0;
+
+  @HiveField(5)
+  int? campaignId;
+
+  @HiveField(6)
+  String? campaignName;
 }
 
 @HiveType(typeId: 2)

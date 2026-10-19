@@ -8,6 +8,7 @@ import 'package:dnd_combat_tracker/l10n/app_localizations.dart';
 import 'presentation/providers/theme_provider.dart';
 
 import 'package:hive_flutter/hive_flutter.dart';
+import 'data/models/campaign.dart';
 import 'data/models/combat.dart';
 import 'data/models/combatant.dart';
 
@@ -21,10 +22,13 @@ void main() async {
   Hive.registerAdapter(CombatAdapter());
   Hive.registerAdapter(CombatantAdapter());
   Hive.registerAdapter(CombatStatusAdapter());
+  Hive.registerAdapter(CampaignAdapter());
+  Hive.registerAdapter(PartyHeroAdapter());
   
   // Open Boxes
   await Hive.openBox<Combat>('combats');
   await Hive.openBox<Combatant>('combatants');
+  await Hive.openBox<Campaign>('campaigns');
 
   runApp(const ProviderScope(child: MyApp()));
 }

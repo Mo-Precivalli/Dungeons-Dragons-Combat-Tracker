@@ -48,4 +48,10 @@ class Combatant extends HiveObject {
 
   @HiveField(12)
   int deathSaveFailures = 0;
+
+  @HiveField(13)
+  int? pendingConcentrationDc;
+
+  bool get isConcentrating =>
+      conditions.any((c) => c.toLowerCase().contains('concentra'));
 }
